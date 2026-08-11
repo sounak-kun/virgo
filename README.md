@@ -1,8 +1,17 @@
-virgo
-=====
-Virtual Desktop Manager for Windows
+# Virgo (Virtual Desktop Manager for Windows)
+Original [Virgo](https://github.com/henkman/virgo)
+Icons Support [here](https://github.com/enria/virgo-icon)
 
-[Download here](https://github.com/papplampe/virgo/releases/download/v.1.4.2/virgo.zip)
+## Method of Adding Icon
+
+1. Download svg format icon from [iconfont](https://www.iconfont.cn/)  
+2. Convert svg to ico at [convertico](https://convertico.com/svg-to-ico/)
+3. Rename the ico file to desktop number, e.g., `1.ico`, and put it together with `virgo.exe` in the same folder.  
+
+
+***
+
+Virtual Desktop Manager for Windows
 
 Features:
 - resource friendly, exe is <10kb on disk and uses <1mb memory while running
@@ -15,15 +24,3 @@ Hotkeys:
         CTRL + 1..4            -> moves active window to desktop 1..4
         ALT + CTRL + SHIFT + Q -> exits the program
         ALT + CTRL + SHIFT + S -> starts/stops handling of other hotkeys
-
-the nerds can build it with
-
-        git clone https://github.com/papplampe/virgo.git
-        cd virgo
-        make
-
-If you do not have gcc/make installed you can change that doing following
-
-1. go to http://msys2.github.io/ and install it according to the instructions there
-2. open msys2 shell and install mingw-w64-i686-gcc and mingw-w64-i686-make using pacman
-3. duplicate C:\msys32\mingw32\bin\mingw32-make.exe and name it make.exe
