@@ -1,6 +1,7 @@
 # Virgo (Virtual Desktop Manager for Windows)
 Original [Virgo](https://github.com/henkman/virgo)
-Icons Support [here](https://github.com/enria/virgo-icon)
+Icons Support [Virgo-icon](https://github.com/enria/virgo-icon)
+Monitor Support [Virgo](https://gitee.com/liuweig/virgo)
 
 ## Method of Adding Icon
 
