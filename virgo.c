@@ -370,6 +370,70 @@ static void virgo_go_to_desk(Virgo *v, unsigned desk) {
 	SetForegroundWindow(state->lastFocus[state->current]);
 }
 
+static void virgo_save_state(Virgo *v) {
+	unsigned m, d;
+	Windows *desk;
+	MonitorState *state;
+	DWORD written;
+	HANDLE hFile = CreateFile("virgo.state", GENERIC_WRITE, 0, NULL,
+							  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return;
+
+	for (m = 0; m < NUM_MONITORS; m++) {
+		state = &v->monitors[m];
+		WriteFile(hFile, &state->current, sizeof(state->current), &written,
+				  NULL);
+
+		for (d = 0; d < NUM_DESKTOPS; d++) {
+			desk = &state->desktops[d];
+			WriteFile(hFile, &desk->count, sizeof(desk->count), &written, NULL);
+			if (desk->count > 0)
+				WriteFile(hFile, desk->windows, sizeof(HWND) * desk->count,
+						  &written, NULL);
+		}
+	}
+
+	CloseHandle(hFile);
+}
+
+static void virgo_load_state(Virgo *v) {
+	unsigned m, d, w, count;
+	HWND hwnd;
+	Windows *desk;
+	MonitorState *state;
+	DWORD read;
+	HANDLE hFile = CreateFile("virgo.state", GENERIC_READ, FILE_SHARE_READ,
+							  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return;
+
+	for (m = 0; m < NUM_MONITORS; m++) {
+		state = &v->monitors[m];
+		ReadFile(hFile, &state->current, sizeof(state->current), &read, NULL);
+
+		for (d = 0; d < NUM_DESKTOPS; d++) {
+			desk = &state->desktops[d];
+			ReadFile(hFile, &count, sizeof(count), &read, NULL);
+
+			for (w = 0; w < count; w++) {
+				ReadFile(hFile, &hwnd, sizeof(hwnd), &read, NULL);
+				if (read == sizeof(hwnd) && is_valid_window(hwnd)) {
+					windows_add(desk, hwnd);
+
+					if (d == state->current)
+						ShowWindow(hwnd, SW_SHOW);
+					else
+						ShowWindow(hwnd, SW_HIDE);
+				}
+			}
+		}
+	}
+
+	CloseHandle(hFile);
+	DeleteFile("virgo.state");
+}
+
 void __main(void) __asm__("__main");
 void __main(void) {
 	Virgo v /* = {0}*/; /* On x86-64 this forces a call to memset */
@@ -379,6 +443,8 @@ void __main(void) {
 	SecureZeroMemory(&v, sizeof(v));
 
 	virgo_init(&v);
+	virgo_load_state(&v);
+	trayicon_set(&v.trayicon, v.monitors[virgo_active_monitor(&v)].current);
 	while (GetMessage(&msg, NULL, 0, 0)) {
 		if (msg.message != WM_HOTKEY) {
 			continue;
@@ -394,6 +460,8 @@ void __main(void) {
 			virgo_move_to_desk(&v, (msg.wParam - 1) / 2);
 		}
 	}
+	virgo_update(&v);
+	virgo_save_state(&v);
 	virgo_deinit(&v);
 	ExitProcess(0);
 }
