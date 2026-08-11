@@ -37,6 +37,7 @@ typedef struct {
 	unsigned current;
 	unsigned handle_hotkeys;
 	Windows desktops[NUM_DESKTOPS];
+	HWND lastFocus[NUM_DESKTOPS];
 	Trayicon trayicon;
 } Virgo;
 
@@ -247,10 +248,12 @@ static void virgo_go_to_desk(Virgo *v, unsigned desk) {
 		return;
 	}
 	virgo_update(v);
+	v->lastFocus[v->current] = GetForegroundWindow();
 	windows_hide(&v->desktops[v->current]);
 	trayicon_set(&v->trayicon, desk);
 	windows_show(&v->desktops[desk]);
 	v->current = desk;
+	SetForegroundWindow(v->lastFocus[v->current]);
 }
 
 void __main(void) __asm__("__main");
