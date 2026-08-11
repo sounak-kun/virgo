@@ -282,8 +282,12 @@ static void virgo_go_to_desk(Virgo *v, unsigned desk) {
 
 void __main(void) __asm__("__main");
 void __main(void) {
-	Virgo v = {0};
+	Virgo v /* = {0}*/; /* On x86-64 this forces a call to memset */
 	MSG msg;
+
+	/* Zeros out Virgo v without calling memset */
+	SecureZeroMemory(&v, sizeof(v));
+
 	virgo_init(&v);
 	while (GetMessage(&msg, NULL, 0, 0)) {
 		if (msg.message != WM_HOTKEY) {
