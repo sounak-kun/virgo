@@ -1,0 +1,15 @@
+BasedOnStyle: LLVM
+BreakBeforeBraces: Attach
+SpaceAfterControlStatementKeyword: true
+
+UseTab: Always
+IndentWidth: 4
+TabWidth: 4
+
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+MaxEmptyLinesToKeep: 1
+ColumnLimit: 80
+
+PointerAlignment: Right

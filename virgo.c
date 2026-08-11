@@ -6,7 +6,7 @@
 #define sb_push(a, v) (stb__sbmaybegrow(a, 1), (a)[stb__sbn(a)++] = (v))
 #define sb_count(a) ((a) ? stb__sbn(a) : 0)
 
-#define stb__sbraw(a) ((int *)(a)-2)
+#define stb__sbraw(a) ((int *)(a) - 2)
 #define stb__sbm(a) stb__sbraw(a)[0]
 #define stb__sbn(a) stb__sbraw(a)[1]
 
@@ -41,8 +41,7 @@ typedef struct {
 	Trayicon trayicon;
 } Virgo;
 
-static void *stb__sbgrowf(void *arr, unsigned increment, unsigned itemsize)
-{
+static void *stb__sbgrowf(void *arr, unsigned increment, unsigned itemsize) {
 	unsigned dbl_cur = arr ? 2 * stb__sbm(arr) : 0;
 	unsigned min_needed = sb_count(arr) + increment;
 	unsigned m = dbl_cur > min_needed ? dbl_cur : min_needed;
@@ -65,8 +64,7 @@ static void *stb__sbgrowf(void *arr, unsigned increment, unsigned itemsize)
 	}
 }
 
-static HICON trayicon_draw(Trayicon *t, char *text, unsigned len)
-{
+static HICON trayicon_draw(Trayicon *t, char *text, unsigned len) {
 	ICONINFO iconInfo;
 	HBITMAP hOldBitmap;
 	HFONT hOldFont;
@@ -81,8 +79,7 @@ static HICON trayicon_draw(Trayicon *t, char *text, unsigned len)
 	return CreateIconIndirect(&iconInfo);
 }
 
-static void trayicon_init(Trayicon *t)
-{
+static void trayicon_init(Trayicon *t) {
 	HDC hdc;
 	t->hwnd =
 		CreateWindowA("STATIC", "virgo", 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
@@ -103,8 +100,7 @@ static void trayicon_init(Trayicon *t)
 	Shell_NotifyIcon(NIM_ADD, &t->nid);
 }
 
-static void trayicon_set(Trayicon *t, unsigned number)
-{
+static void trayicon_set(Trayicon *t, unsigned number) {
 	char snumber[2];
 	if (number > 9) {
 		return;
@@ -116,8 +112,7 @@ static void trayicon_set(Trayicon *t, unsigned number)
 	Shell_NotifyIcon(NIM_MODIFY, &t->nid);
 }
 
-static void trayicon_deinit(Trayicon *t)
-{
+static void trayicon_deinit(Trayicon *t) {
 	Shell_NotifyIcon(NIM_DELETE, &t->nid);
 	DestroyIcon(t->nid.hIcon);
 	DeleteObject(t->hBitmap);
@@ -126,8 +121,7 @@ static void trayicon_deinit(Trayicon *t)
 	DestroyWindow(t->hwnd);
 }
 
-static void windows_mod(Windows *wins, unsigned state)
-{
+static void windows_mod(Windows *wins, unsigned state) {
 	unsigned i;
 	for (i = 0; i < wins->count; i++) {
 		ShowWindow(wins->windows[i], state);
@@ -138,8 +132,7 @@ static void windows_show(Windows *wins) { windows_mod(wins, SW_SHOW); }
 
 static void windows_hide(Windows *wins) { windows_mod(wins, SW_HIDE); }
 
-static void windows_add(Windows *wins, HWND hwnd)
-{
+static void windows_add(Windows *wins, HWND hwnd) {
 	if (wins->count >= sb_count(wins->windows)) {
 		sb_push(wins->windows, hwnd);
 	} else {
@@ -148,8 +141,7 @@ static void windows_add(Windows *wins, HWND hwnd)
 	wins->count++;
 }
 
-static void windows_del(Windows *wins, HWND hwnd)
-{
+static void windows_del(Windows *wins, HWND hwnd) {
 	unsigned i, e;
 	for (i = 0; i < wins->count; i++) {
 		if (wins->windows[i] != hwnd) {
@@ -165,16 +157,14 @@ static void windows_del(Windows *wins, HWND hwnd)
 	}
 }
 
-static unsigned is_valid_window(HWND hwnd)
-{
+static unsigned is_valid_window(HWND hwnd) {
 	WINDOWINFO wi;
 	wi.cbSize = sizeof(wi);
 	GetWindowInfo(hwnd, &wi);
 	return (wi.dwStyle & WS_VISIBLE) && !(wi.dwExStyle & WS_EX_TOOLWINDOW);
 }
 
-static void register_hotkey(unsigned id, unsigned mod, unsigned vk)
-{
+static void register_hotkey(unsigned id, unsigned mod, unsigned vk) {
 	if (!RegisterHotKey(NULL, id, mod, vk)) {
 		MessageBox(NULL, "could not register hotkey", "error",
 				   MB_ICONEXCLAMATION);
@@ -182,8 +172,7 @@ static void register_hotkey(unsigned id, unsigned mod, unsigned vk)
 	}
 }
 
-static BOOL enum_func(HWND hwnd, LPARAM lParam)
-{
+static BOOL enum_func(HWND hwnd, LPARAM lParam) {
 	unsigned i, e;
 	Virgo *v;
 	Windows *desk;
@@ -203,8 +192,7 @@ static BOOL enum_func(HWND hwnd, LPARAM lParam)
 	return 1;
 }
 
-static void virgo_update(Virgo *v)
-{
+static void virgo_update(Virgo *v) {
 	unsigned i, e;
 	Windows *desk;
 	HWND hwnd;
@@ -227,8 +215,7 @@ static void virgo_update(Virgo *v)
 	EnumWindows((WNDENUMPROC)&enum_func, (LPARAM)v);
 }
 
-static void virgo_toggle_hotkeys(Virgo *v)
-{
+static void virgo_toggle_hotkeys(Virgo *v) {
 	unsigned i;
 	v->handle_hotkeys = !v->handle_hotkeys;
 	if (v->handle_hotkeys) {
@@ -244,8 +231,7 @@ static void virgo_toggle_hotkeys(Virgo *v)
 	}
 }
 
-static void virgo_init(Virgo *v)
-{
+static void virgo_init(Virgo *v) {
 	unsigned i;
 	v->handle_hotkeys = 1;
 	for (i = 0; i < NUM_DESKTOPS; i++) {
@@ -259,8 +245,7 @@ static void virgo_init(Virgo *v)
 	trayicon_init(&v->trayicon);
 }
 
-static void virgo_deinit(Virgo *v)
-{
+static void virgo_deinit(Virgo *v) {
 	unsigned i;
 	for (i = 0; i < NUM_DESKTOPS; i++) {
 		windows_show(&v->desktops[i]);
@@ -269,8 +254,7 @@ static void virgo_deinit(Virgo *v)
 	trayicon_deinit(&v->trayicon);
 }
 
-static void virgo_move_to_desk(Virgo *v, unsigned desk)
-{
+static void virgo_move_to_desk(Virgo *v, unsigned desk) {
 	HWND hwnd;
 	if (v->current == desk) {
 		return;
@@ -285,8 +269,7 @@ static void virgo_move_to_desk(Virgo *v, unsigned desk)
 	ShowWindow(hwnd, SW_HIDE);
 }
 
-static void virgo_go_to_desk(Virgo *v, unsigned desk)
-{
+static void virgo_go_to_desk(Virgo *v, unsigned desk) {
 	if (v->current == desk) {
 		return;
 	}
@@ -298,8 +281,7 @@ static void virgo_go_to_desk(Virgo *v, unsigned desk)
 }
 
 void __main(void) __asm__("__main");
-void __main(void)
-{
+void __main(void) {
 	Virgo v = {0};
 	MSG msg;
 	virgo_init(&v);
