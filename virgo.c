@@ -21,7 +21,11 @@
 #define NUM_DESKTOPS 4
 #define NUM_MONITORS 4
 
-char *icons[] = {"1.ico", "2.ico", "3.ico", "4.ico"};
+char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
+	{"11.ico", "12.ico", "13.ico", "14.ico"},
+	{"21.ico", "22.ico", "23.ico", "24.ico"},
+	{"31.ico", "32.ico", "33.ico", "34.ico"},
+	{"41.ico", "42.ico", "43.ico", "44.ico"}};
 
 typedef struct {
 	HWND *windows;
@@ -43,7 +47,8 @@ typedef struct {
 
 typedef struct {
 	unsigned handle_hotkeys;
-	Trayicon trayicon;
+	unsigned monitor_count;
+	Trayicon trayicons[NUM_MONITORS];
 	MonitorState monitors[NUM_MONITORS];
 } Virgo;
 
@@ -70,35 +75,45 @@ static void *stb__sbgrowf(void *arr, unsigned increment, unsigned itemsize) {
 	}
 }
 
-static void trayicon_draw(Trayicon *t, unsigned number) {
-	ExtractIconEx(icons[number], 0, &t->nid.hIcon, NULL, 1);
+static void trayicon_draw(Trayicon *t, unsigned monitor, unsigned number) {
+	ExtractIconEx(icons[monitor][number], 0, &t->nid.hIcon, NULL, 1);
 }
 
-static void trayicon_init(Trayicon *t) {
-	t->hwnd =
-		CreateWindowA("STATIC", "virgo", 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL);
-	t->bitmapWidth = GetSystemMetrics(SM_CXSMICON);
-	t->nid.cbSize = sizeof(t->nid);
-	t->nid.hWnd = t->hwnd;
-	t->nid.uID = 100;
-	t->nid.uFlags = NIF_ICON;
-	trayicon_draw(t, 0);
-	Shell_NotifyIcon(NIM_ADD, &t->nid);
-}
-
-static void trayicon_set(Trayicon *t, unsigned number) {
-	if (number > 9) {
-		return;
+static void trayicon_init(Trayicon ts[NUM_MONITORS], unsigned monitor_count) {
+	int m;
+	Trayicon *t;
+	for (m = 0; m < monitor_count; m++) {
+		t = &ts[m];
+		t->hwnd = CreateWindowA("STATIC", "virgo", 0, 0, 0, 0, 0, NULL, NULL,
+								NULL, NULL);
+		t->bitmapWidth = GetSystemMetrics(SM_CXSMICON);
+		t->nid.cbSize = sizeof(t->nid);
+		t->nid.hWnd = t->hwnd;
+		t->nid.uID = 100;
+		t->nid.uFlags = NIF_ICON;
+		trayicon_draw(t, m, 0);
+		Shell_NotifyIcon(NIM_ADD, &t->nid);
 	}
+}
+
+static void trayicon_set(Trayicon ts[NUM_MONITORS], unsigned monitor,
+						 unsigned number) {
+	Trayicon *t;
+	t = &ts[monitor];
 	DestroyIcon(t->nid.hIcon);
-	trayicon_draw(t, number);
+	trayicon_draw(t, monitor, number);
 	Shell_NotifyIcon(NIM_MODIFY, &t->nid);
 }
 
-static void trayicon_deinit(Trayicon *t) {
-	Shell_NotifyIcon(NIM_DELETE, &t->nid);
-	DestroyIcon(t->nid.hIcon);
-	DestroyWindow(t->hwnd);
+static void trayicon_deinit(Trayicon ts[NUM_MONITORS], unsigned monitor_count) {
+	int m;
+	Trayicon *t;
+	for (m = 0; m < monitor_count; m++) {
+		t = &ts[m];
+		Shell_NotifyIcon(NIM_DELETE, &t->nid);
+		DestroyIcon(t->nid.hIcon);
+		DestroyWindow(t->hwnd);
+	}
 }
 
 typedef struct {
@@ -141,7 +156,10 @@ static void virgo_init_monitors(Virgo *v) {
 		pt.x = 0;
 		pt.y = 0;
 		state->monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+		ctx.index++;
 	}
+
+	v->monitor_count = ctx.index;
 }
 
 static unsigned virgo_monitor_index(Virgo *v, HMONITOR monitor) {
@@ -321,7 +339,7 @@ static void virgo_init(Virgo *v) {
 					'Q');
 	register_hotkey(i * 2 + 1, MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
 					'S');
-	trayicon_init(&v->trayicon);
+	trayicon_init(v->trayicons, v->monitor_count);
 }
 
 static void virgo_deinit(Virgo *v) {
@@ -332,7 +350,7 @@ static void virgo_deinit(Virgo *v) {
 			sb_free(v->monitors[m].desktops[d].windows);
 		}
 	}
-	trayicon_deinit(&v->trayicon);
+	trayicon_deinit(v->trayicons, v->monitor_count);
 }
 
 static void virgo_move_to_desk(Virgo *v, unsigned desk) {
@@ -364,7 +382,7 @@ static void virgo_go_to_desk(Virgo *v, unsigned desk) {
 	virgo_update(v);
 	state->lastFocus[state->current] = GetForegroundWindow();
 	windows_hide(&state->desktops[state->current]);
-	trayicon_set(&v->trayicon, desk);
+	trayicon_set(v->trayicons, monitor_idx, desk);
 	windows_show(&state->desktops[desk]);
 	state->current = desk;
 	SetForegroundWindow(state->lastFocus[state->current]);
@@ -379,6 +397,9 @@ static void virgo_save_state(Virgo *v) {
 							  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 		return;
+
+	WriteFile(hFile, &v->monitor_count, sizeof(v->monitor_count), &written,
+			  NULL);
 
 	for (m = 0; m < NUM_MONITORS; m++) {
 		state = &v->monitors[m];
@@ -398,7 +419,7 @@ static void virgo_save_state(Virgo *v) {
 }
 
 static void virgo_load_state(Virgo *v) {
-	unsigned m, d, w, count;
+	unsigned m, d, w, count, old_monitor_count;
 	HWND hwnd;
 	Windows *desk;
 	MonitorState *state;
@@ -408,23 +429,29 @@ static void virgo_load_state(Virgo *v) {
 	if (hFile == INVALID_HANDLE_VALUE)
 		return;
 
-	for (m = 0; m < NUM_MONITORS; m++) {
-		state = &v->monitors[m];
-		ReadFile(hFile, &state->current, sizeof(state->current), &read, NULL);
+	ReadFile(hFile, &old_monitor_count, sizeof(v->monitor_count), &read, NULL);
 
-		for (d = 0; d < NUM_DESKTOPS; d++) {
-			desk = &state->desktops[d];
-			ReadFile(hFile, &count, sizeof(count), &read, NULL);
+	if (old_monitor_count <= v->monitor_count) {
+		for (m = 0; m < old_monitor_count; m++) {
+			state = &v->monitors[m];
+			ReadFile(hFile, &state->current, sizeof(state->current), &read,
+					 NULL);
+			trayicon_set(v->trayicons, m, state->current);
 
-			for (w = 0; w < count; w++) {
-				ReadFile(hFile, &hwnd, sizeof(hwnd), &read, NULL);
-				if (read == sizeof(hwnd) && is_valid_window(hwnd)) {
-					windows_add(desk, hwnd);
+			for (d = 0; d < NUM_DESKTOPS; d++) {
+				desk = &state->desktops[d];
+				ReadFile(hFile, &count, sizeof(count), &read, NULL);
 
-					if (d == state->current)
-						ShowWindow(hwnd, SW_SHOW);
-					else
-						ShowWindow(hwnd, SW_HIDE);
+				for (w = 0; w < count; w++) {
+					ReadFile(hFile, &hwnd, sizeof(hwnd), &read, NULL);
+					if (read == sizeof(hwnd) && is_valid_window(hwnd)) {
+						windows_add(desk, hwnd);
+
+						if (d == state->current)
+							ShowWindow(hwnd, SW_SHOW);
+						else
+							ShowWindow(hwnd, SW_HIDE);
+					}
 				}
 			}
 		}
@@ -444,7 +471,6 @@ void __main(void) {
 
 	virgo_init(&v);
 	virgo_load_state(&v);
-	trayicon_set(&v.trayicon, v.monitors[virgo_active_monitor(&v)].current);
 	while (GetMessage(&msg, NULL, 0, 0)) {
 		if (msg.message != WM_HOTKEY) {
 			continue;
