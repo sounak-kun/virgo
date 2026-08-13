@@ -2,18 +2,6 @@
 #include <windows.h>
 #include <shellapi.h>
 
-#define sb_free(a) ((a) ? HeapFree(GetProcessHeap(), 0, stb__sbraw(a)), 0 : 0)
-#define sb_push(a, v) (stb__sbmaybegrow(a, 1), (a)[stb__sbn(a)++] = (v))
-#define sb_count(a) ((a) ? stb__sbn(a) : 0)
-
-#define stb__sbraw(a) ((int *)(a) - 2)
-#define stb__sbm(a) stb__sbraw(a)[0]
-#define stb__sbn(a) stb__sbraw(a)[1]
-
-#define stb__sbneedgrow(a, n) ((a) == 0 || stb__sbn(a) + (n) >= stb__sbm(a))
-#define stb__sbmaybegrow(a, n) (stb__sbneedgrow(a, (n)) ? stb__sbgrow(a, n) : 0)
-#define stb__sbgrow(a, n) ((a) = stb__sbgrowf((a), (n), sizeof(*(a))))
-
 #ifndef MOD_NOREPEAT
 #define MOD_NOREPEAT 0x4000
 #endif
@@ -30,6 +18,7 @@ char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
 typedef struct {
 	HWND *windows;
 	unsigned count;
+	unsigned capacity;
 } Windows;
 
 typedef struct {
@@ -51,29 +40,6 @@ typedef struct {
 	Trayicon trayicons[NUM_MONITORS];
 	MonitorState monitors[NUM_MONITORS];
 } Virgo;
-
-static void *stb__sbgrowf(void *arr, unsigned increment, unsigned itemsize) {
-	unsigned dbl_cur = arr ? 2 * stb__sbm(arr) : 0;
-	unsigned min_needed = sb_count(arr) + increment;
-	unsigned m = dbl_cur > min_needed ? dbl_cur : min_needed;
-	unsigned *p;
-	if (arr) {
-		p = HeapReAlloc(GetProcessHeap(), 0, stb__sbraw(arr),
-						itemsize * m + sizeof(unsigned) * 2);
-	} else {
-		p = HeapAlloc(GetProcessHeap(), 0, itemsize * m + sizeof(unsigned) * 2);
-	}
-	if (p) {
-		if (!arr) {
-			p[1] = 0;
-		}
-		p[0] = m;
-		return p + 2;
-	} else {
-		ExitProcess(1);
-		return (void *)(2 * sizeof(unsigned));
-	}
-}
 
 static void trayicon_draw(Trayicon *t, unsigned monitor, unsigned number) {
 	ExtractIconEx(icons[monitor][number], 0, &t->nid.hIcon, NULL, 1);
@@ -207,6 +173,24 @@ static unsigned virgo_active_monitor(Virgo *v) {
 	return virgo_monitor_from_hwnd(v, GetForegroundWindow());
 }
 
+static void windows_buffer_grow(Windows *wins) {
+	unsigned target = (wins && wins->capacity) ? 2 * wins->capacity : 4;
+	HWND *new;
+	if (wins->windows) {
+		new = HeapReAlloc(GetProcessHeap(), 0, wins->windows,
+						  sizeof(HWND) * target);
+	} else {
+		new = HeapAlloc(GetProcessHeap(), 0, sizeof(HWND) * target);
+	}
+	if (new) {
+		wins->windows = new;
+		wins->capacity = target;
+	} else {
+		MessageBox(NULL, "heap allocation error", "error", MB_ICONEXCLAMATION);
+		ExitProcess(1);
+	}
+}
+
 static void windows_mod(Windows *wins, unsigned state) {
 	unsigned i;
 	for (i = 0; i < wins->count; i++) {
@@ -219,27 +203,18 @@ static void windows_show(Windows *wins) { windows_mod(wins, SW_SHOW); }
 static void windows_hide(Windows *wins) { windows_mod(wins, SW_HIDE); }
 
 static void windows_add(Windows *wins, HWND hwnd) {
-	if (wins->count >= sb_count(wins->windows)) {
-		sb_push(wins->windows, hwnd);
-	} else {
-		wins->windows[wins->count] = hwnd;
-	}
-	wins->count++;
+	if (wins->count >= wins->capacity)
+		windows_buffer_grow(wins);
+	wins->windows[wins->count++] = hwnd;
 }
 
 static void windows_del(Windows *wins, HWND hwnd) {
-	unsigned i, e;
+	unsigned i;
 	for (i = 0; i < wins->count; i++) {
-		if (wins->windows[i] != hwnd) {
-			continue;
+		if (wins->windows[i] == hwnd) {
+			wins->windows[i] = wins->windows[--wins->count];
+			break;
 		}
-		if (i != wins->count - 1) {
-			for (e = i; e < wins->count - 1; e++) {
-				wins->windows[e] = wins->windows[e + 1];
-			}
-		}
-		wins->count--;
-		break;
 	}
 }
 
@@ -254,7 +229,7 @@ static void register_hotkey(unsigned id, unsigned mod, unsigned vk) {
 	if (!RegisterHotKey(NULL, id, mod, vk)) {
 		MessageBox(NULL, "could not register hotkey", "error",
 				   MB_ICONEXCLAMATION);
-		ExitProcess(1);
+		ExitProcess(2);
 	}
 }
 
@@ -347,7 +322,7 @@ static void virgo_deinit(Virgo *v) {
 	for (m = 0; m < NUM_MONITORS; m++) {
 		for (d = 0; d < NUM_DESKTOPS; d++) {
 			windows_show(&v->monitors[m].desktops[d]);
-			sb_free(v->monitors[m].desktops[d].windows);
+			HeapFree(GetProcessHeap(), 0, v->monitors[m].desktops[d].windows);
 		}
 	}
 	trayicon_deinit(v->trayicons, v->monitor_count);
