@@ -7,7 +7,7 @@ Monitor Support [Virgo](https://gitee.com/liuweig/virgo)
 
 1. Download svg format icon from [iconfont](https://www.iconfont.cn/)  
 2. Convert svg to ico at [convertico](https://convertico.com/svg-to-ico/)
-3. Rename the ico file to desktop number, e.g., `1.ico`, and put it together with `virgo.exe` in the same folder.  
+3. Rename the ico file to "<monitor_number><desktop_number>.ico", e.g., `31.ico` for monitor 3 desktop 1, and put it together with `virgo.exe` in the same folder.  
 
 
 ***
