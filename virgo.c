@@ -41,15 +41,17 @@ typedef struct {
 	MonitorState monitors[NUM_MONITORS];
 } Virgo;
 
+static Virgo virgo; /* This is fine as .bss section is zero initialized */
+
 static void trayicon_draw(Trayicon *t, unsigned monitor, unsigned number) {
 	ExtractIconEx(icons[monitor][number], 0, &t->nid.hIcon, NULL, 1);
 }
 
-static void trayicon_init(Trayicon ts[NUM_MONITORS], unsigned monitor_count) {
+static void trayicon_init() {
 	int m;
 	Trayicon *t;
-	for (m = 0; m < monitor_count; m++) {
-		t = &ts[m];
+	for (m = 0; m < virgo.monitor_count; m++) {
+		t = &virgo.trayicons[m];
 		t->hwnd = CreateWindowA("STATIC", "virgo", 0, 0, 0, 0, 0, NULL, NULL,
 								NULL, NULL);
 		t->bitmapWidth = GetSystemMetrics(SM_CXSMICON);
@@ -62,95 +64,84 @@ static void trayicon_init(Trayicon ts[NUM_MONITORS], unsigned monitor_count) {
 	}
 }
 
-static void trayicon_set(Trayicon ts[NUM_MONITORS], unsigned monitor,
-						 unsigned number) {
+static void trayicon_set(unsigned monitor, unsigned number) {
 	Trayicon *t;
-	t = &ts[monitor];
+	t = &virgo.trayicons[monitor];
 	DestroyIcon(t->nid.hIcon);
 	trayicon_draw(t, monitor, number);
 	Shell_NotifyIcon(NIM_MODIFY, &t->nid);
 }
 
-static void trayicon_deinit(Trayicon ts[NUM_MONITORS], unsigned monitor_count) {
+static void trayicon_deinit() {
 	int m;
 	Trayicon *t;
-	for (m = 0; m < monitor_count; m++) {
-		t = &ts[m];
+	for (m = 0; m < virgo.monitor_count; m++) {
+		t = &virgo.trayicons[m];
 		Shell_NotifyIcon(NIM_DELETE, &t->nid);
 		DestroyIcon(t->nid.hIcon);
 		DestroyWindow(t->hwnd);
 	}
 }
 
-typedef struct {
-	unsigned index;
-	Virgo *virgo;
-} MonitorEnumContext;
-
 static BOOL CALLBACK find_monitor_handles(HMONITOR monitor, HDC hdc,
 										  LPRECT rect, LPARAM lParam) {
-	MonitorEnumContext *ctx;
 	MonitorState *state;
 	(void)hdc;
 	(void)rect;
+	(void)lParam;
 
-	ctx = (MonitorEnumContext *)lParam;
-	if (ctx->index >= NUM_MONITORS)
+	if (virgo.monitor_count >= NUM_MONITORS)
 		return FALSE;
 
-	state = &ctx->virgo->monitors[ctx->index];
+	state = &virgo.monitors[virgo.monitor_count];
 	SecureZeroMemory(state, sizeof(*state));
 
 	state->monitor = monitor;
-	ctx->index++;
+	virgo.monitor_count++;
 	return TRUE;
 }
 
-static void virgo_init_monitors(Virgo *v) {
-	MonitorEnumContext ctx;
+static void virgo_init_monitors() {
 	MonitorState *state;
 	POINT pt;
 
-	SecureZeroMemory(&ctx, sizeof(ctx));
-	ctx.virgo = v;
+	virgo.monitor_count = 0;
 
-	EnumDisplayMonitors(NULL, NULL, find_monitor_handles, (LPARAM)&ctx);
+	EnumDisplayMonitors(NULL, NULL, find_monitor_handles, (LPARAM)NULL);
 
-	if (ctx.index == 0) {
-		state = &v->monitors[0];
+	if (virgo.monitor_count == 0) {
+		state = &virgo.monitors[0];
 		SecureZeroMemory(state, sizeof(*state));
 		pt.x = 0;
 		pt.y = 0;
 		state->monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
-		ctx.index++;
+		virgo.monitor_count++;
 	}
-
-	v->monitor_count = ctx.index;
 }
 
-static unsigned virgo_monitor_index(Virgo *v, HMONITOR monitor) {
+static unsigned virgo_monitor_index(HMONITOR monitor) {
 	unsigned i;
 	for (i = 0; i < NUM_MONITORS; i++)
-		if (v->monitors[i].monitor == monitor)
+		if (virgo.monitors[i].monitor == monitor)
 			return i;
 
 	return 0; /* Fallback to 0 if not found */
 }
 
-static unsigned virgo_monitor_from_hwnd(Virgo *v, HWND hwnd) {
+static unsigned virgo_monitor_from_hwnd(HWND hwnd) {
 	HMONITOR monitor;
 
 	monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-	return virgo_monitor_index(v, monitor);
+	return virgo_monitor_index(monitor);
 }
 
-static BOOL virgo_contains_window(Virgo *v, HWND hwnd) {
+static BOOL virgo_contains_window(HWND hwnd) {
 	unsigned m, d, w;
 	MonitorState *state;
 	Windows *desk;
 
 	for (m = 0; m < NUM_MONITORS; m++) {
-		state = &v->monitors[m];
+		state = &virgo.monitors[m];
 		for (d = 0; d < NUM_DESKTOPS; d++) {
 			desk = &state->desktops[d];
 			for (w = 0; w < desk->count; w++)
@@ -162,15 +153,15 @@ static BOOL virgo_contains_window(Virgo *v, HWND hwnd) {
 	return FALSE;
 }
 
-static unsigned virgo_active_monitor(Virgo *v) {
+static unsigned virgo_active_monitor() {
 	POINT pt;
 	HMONITOR monitor;
 
 	if (GetCursorPos(&pt)) {
 		monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-		return virgo_monitor_index(v, monitor);
+		return virgo_monitor_index(monitor);
 	}
-	return virgo_monitor_from_hwnd(v, GetForegroundWindow());
+	return virgo_monitor_from_hwnd(GetForegroundWindow());
 }
 
 static void windows_buffer_grow(Windows *wins) {
@@ -235,29 +226,28 @@ static void register_hotkey(unsigned id, unsigned mod, unsigned vk) {
 
 static BOOL CALLBACK find_window_handles(HWND hwnd, LPARAM lParam) {
 	unsigned monitor_idx;
-	Virgo *v;
 	MonitorState *state;
+	(void)lParam;
 
-	v = (Virgo *)lParam;
 	if (!is_valid_window(hwnd))
 		return TRUE;
-	if (virgo_contains_window(v, hwnd))
+	if (virgo_contains_window(hwnd))
 		return TRUE;
 
-	monitor_idx = virgo_monitor_from_hwnd(v, hwnd);
-	state = &v->monitors[monitor_idx];
+	monitor_idx = virgo_monitor_from_hwnd(hwnd);
+	state = &virgo.monitors[monitor_idx];
 	windows_add(&state->desktops[state->current], hwnd);
 	return TRUE;
 }
 
-static void virgo_update(Virgo *v) {
+static void virgo_update() {
 	unsigned m, d, w, n;
 	HWND hwnd;
 	Windows *desk;
 	MonitorState *state;
 
 	for (m = 0; m < NUM_MONITORS; m++) {
-		state = &v->monitors[m];
+		state = &virgo.monitors[m];
 		for (d = 0; d < NUM_DESKTOPS; d++) {
 			desk = &state->desktops[d];
 			w = 0;
@@ -271,11 +261,12 @@ static void virgo_update(Virgo *v) {
 					windows_del(desk, hwnd);
 					continue;
 				}
-				n = virgo_monitor_from_hwnd(v, hwnd);
+				n = virgo_monitor_from_hwnd(hwnd);
 				if (n != m) {
 					windows_del(desk, hwnd);
 					windows_add(
-						&v->monitors[n].desktops[v->monitors[n].current], hwnd);
+						&virgo.monitors[n].desktops[virgo.monitors[n].current],
+						hwnd);
 					ShowWindow(hwnd, SW_SHOW);
 					continue;
 				}
@@ -283,13 +274,13 @@ static void virgo_update(Virgo *v) {
 			}
 		}
 	}
-	EnumWindows(find_window_handles, (LPARAM)v);
+	EnumWindows(find_window_handles, (LPARAM)NULL);
 }
 
-static void virgo_toggle_hotkeys(Virgo *v) {
+static void virgo_toggle_hotkeys() {
 	unsigned i;
-	v->handle_hotkeys = !v->handle_hotkeys;
-	if (v->handle_hotkeys) {
+	virgo.handle_hotkeys = !virgo.handle_hotkeys;
+	if (virgo.handle_hotkeys) {
 		for (i = 0; i < NUM_DESKTOPS; i++) {
 			register_hotkey(i * 2, MOD_ALT | MOD_NOREPEAT, i + 1 + '0');
 			register_hotkey(i * 2 + 1, MOD_CONTROL | MOD_NOREPEAT, i + 1 + '0');
@@ -302,10 +293,10 @@ static void virgo_toggle_hotkeys(Virgo *v) {
 	}
 }
 
-static void virgo_init(Virgo *v) {
+static void virgo_init() {
 	unsigned i;
-	virgo_init_monitors(v);
-	v->handle_hotkeys = 1;
+	virgo_init_monitors();
+	virgo.handle_hotkeys = 1;
 	for (i = 0; i < NUM_DESKTOPS; i++) {
 		register_hotkey(i * 2, MOD_ALT | MOD_NOREPEAT, i + 1 + '0');
 		register_hotkey(i * 2 + 1, MOD_CONTROL | MOD_NOREPEAT, i + 1 + '0');
@@ -314,31 +305,32 @@ static void virgo_init(Virgo *v) {
 					'Q');
 	register_hotkey(i * 2 + 1, MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
 					'S');
-	trayicon_init(v->trayicons, v->monitor_count);
+	trayicon_init();
 }
 
-static void virgo_deinit(Virgo *v) {
+static void virgo_deinit() {
 	unsigned m, d;
 	for (m = 0; m < NUM_MONITORS; m++) {
 		for (d = 0; d < NUM_DESKTOPS; d++) {
-			windows_show(&v->monitors[m].desktops[d]);
-			HeapFree(GetProcessHeap(), 0, v->monitors[m].desktops[d].windows);
+			windows_show(&virgo.monitors[m].desktops[d]);
+			HeapFree(GetProcessHeap(), 0,
+					 virgo.monitors[m].desktops[d].windows);
 		}
 	}
-	trayicon_deinit(v->trayicons, v->monitor_count);
+	trayicon_deinit();
 }
 
-static void virgo_move_to_desk(Virgo *v, unsigned desk) {
+static void virgo_move_to_desk(unsigned desk) {
 	unsigned monitor_idx;
 	HWND hwnd;
 	MonitorState *state;
-	virgo_update(v);
+	virgo_update();
 	hwnd = GetForegroundWindow();
 	if (!hwnd || !is_valid_window(hwnd)) {
 		return;
 	}
-	monitor_idx = virgo_monitor_from_hwnd(v, hwnd);
-	state = &v->monitors[monitor_idx];
+	monitor_idx = virgo_monitor_from_hwnd(hwnd);
+	state = &virgo.monitors[monitor_idx];
 	if (state->current == desk)
 		return;
 	windows_del(&state->desktops[state->current], hwnd);
@@ -346,24 +338,24 @@ static void virgo_move_to_desk(Virgo *v, unsigned desk) {
 	ShowWindow(hwnd, SW_HIDE);
 }
 
-static void virgo_go_to_desk(Virgo *v, unsigned desk) {
+static void virgo_go_to_desk(unsigned desk) {
 	unsigned monitor_idx;
 	MonitorState *state;
-	monitor_idx = virgo_active_monitor(v);
-	state = &v->monitors[monitor_idx];
+	monitor_idx = virgo_active_monitor();
+	state = &virgo.monitors[monitor_idx];
 	if (state->current == desk) {
 		return;
 	}
-	virgo_update(v);
+	virgo_update();
 	state->lastFocus[state->current] = GetForegroundWindow();
 	windows_hide(&state->desktops[state->current]);
-	trayicon_set(v->trayicons, monitor_idx, desk);
+	trayicon_set(monitor_idx, desk);
 	windows_show(&state->desktops[desk]);
 	state->current = desk;
 	SetForegroundWindow(state->lastFocus[state->current]);
 }
 
-static void virgo_save_state(Virgo *v) {
+static void virgo_save_state() {
 	unsigned m, d;
 	Windows *desk;
 	MonitorState *state;
@@ -373,11 +365,11 @@ static void virgo_save_state(Virgo *v) {
 	if (hFile == INVALID_HANDLE_VALUE)
 		return;
 
-	WriteFile(hFile, &v->monitor_count, sizeof(v->monitor_count), &written,
-			  NULL);
+	WriteFile(hFile, &virgo.monitor_count, sizeof(virgo.monitor_count),
+			  &written, NULL);
 
 	for (m = 0; m < NUM_MONITORS; m++) {
-		state = &v->monitors[m];
+		state = &virgo.monitors[m];
 		WriteFile(hFile, &state->current, sizeof(state->current), &written,
 				  NULL);
 
@@ -393,7 +385,7 @@ static void virgo_save_state(Virgo *v) {
 	CloseHandle(hFile);
 }
 
-static void virgo_load_state(Virgo *v) {
+static void virgo_load_state() {
 	unsigned m, d, w, count, old_monitor_count;
 	HWND hwnd;
 	Windows *desk;
@@ -404,14 +396,15 @@ static void virgo_load_state(Virgo *v) {
 	if (hFile == INVALID_HANDLE_VALUE)
 		return;
 
-	ReadFile(hFile, &old_monitor_count, sizeof(v->monitor_count), &read, NULL);
+	ReadFile(hFile, &old_monitor_count, sizeof(virgo.monitor_count), &read,
+			 NULL);
 
-	if (old_monitor_count <= v->monitor_count) {
+	if (old_monitor_count <= virgo.monitor_count) {
 		for (m = 0; m < old_monitor_count; m++) {
-			state = &v->monitors[m];
+			state = &virgo.monitors[m];
 			ReadFile(hFile, &state->current, sizeof(state->current), &read,
 					 NULL);
-			trayicon_set(v->trayicons, m, state->current);
+			trayicon_set(m, state->current);
 
 			for (d = 0; d < NUM_DESKTOPS; d++) {
 				desk = &state->desktops[d];
@@ -438,14 +431,10 @@ static void virgo_load_state(Virgo *v) {
 
 void __main(void) __asm__("__main");
 void __main(void) {
-	Virgo v /* = {0}*/; /* On x86-64 this forces a call to memset */
 	MSG msg;
 
-	/* Zeros out Virgo v without calling memset */
-	SecureZeroMemory(&v, sizeof(v));
-
-	virgo_init(&v);
-	virgo_load_state(&v);
+	virgo_init();
+	virgo_load_state();
 	while (GetMessage(&msg, NULL, 0, 0)) {
 		if (msg.message != WM_HOTKEY) {
 			continue;
@@ -454,15 +443,15 @@ void __main(void) {
 			break;
 		}
 		if (msg.wParam == NUM_DESKTOPS * 2 + 1) {
-			virgo_toggle_hotkeys(&v);
+			virgo_toggle_hotkeys();
 		} else if (msg.wParam % 2 == 0) {
-			virgo_go_to_desk(&v, msg.wParam / 2);
+			virgo_go_to_desk(msg.wParam / 2);
 		} else {
-			virgo_move_to_desk(&v, (msg.wParam - 1) / 2);
+			virgo_move_to_desk((msg.wParam - 1) / 2);
 		}
 	}
-	virgo_update(&v);
-	virgo_save_state(&v);
-	virgo_deinit(&v);
+	virgo_update();
+	virgo_save_state();
+	virgo_deinit();
 	ExitProcess(0);
 }
