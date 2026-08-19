@@ -9,6 +9,8 @@
 #define NUM_DESKTOPS 4
 #define NUM_MONITORS 4
 
+#define NUM_WIN_HOOK 3
+
 char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
 	{"11.ico", "12.ico", "13.ico", "14.ico"},
 	{"21.ico", "22.ico", "23.ico", "24.ico"},
@@ -17,6 +19,7 @@ char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
 
 typedef struct {
 	HWND *windows;
+	HWND lastFocus;
 	unsigned count;
 	unsigned capacity;
 } Windows;
@@ -30,7 +33,6 @@ typedef struct {
 typedef struct {
 	unsigned current;
 	HMONITOR monitor;
-	HWND lastFocus[NUM_DESKTOPS];
 	Windows desktops[NUM_DESKTOPS];
 } MonitorState;
 
@@ -39,6 +41,7 @@ typedef struct {
 	unsigned monitor_count;
 	Trayicon trayicons[NUM_MONITORS];
 	MonitorState monitors[NUM_MONITORS];
+	HWINEVENTHOOK hooks[NUM_WIN_HOOK];
 } Virgo;
 
 static Virgo virgo; /* This is fine as .bss section is zero initialized */
@@ -135,22 +138,33 @@ static unsigned virgo_monitor_from_hwnd(HWND hwnd) {
 	return virgo_monitor_index(monitor);
 }
 
-static BOOL virgo_contains_window(HWND hwnd) {
+static BOOL virgo_monitor_desk_from_hwnd_local(HWND hwnd, MonitorState **state,
+											   Windows **desk) {
 	unsigned m, d, w;
-	MonitorState *state;
-	Windows *desk;
+	MonitorState *_st;
+	Windows *_dsk;
 
 	for (m = 0; m < NUM_MONITORS; m++) {
-		state = &virgo.monitors[m];
+		_st = &virgo.monitors[m];
 		for (d = 0; d < NUM_DESKTOPS; d++) {
-			desk = &state->desktops[d];
-			for (w = 0; w < desk->count; w++)
-				if (desk->windows[w] == hwnd)
+			_dsk = &_st->desktops[d];
+			for (w = 0; w < _dsk->count; w++) {
+				if (_dsk->windows[w] == hwnd) {
+					if (state)
+						*state = _st;
+					if (desk)
+						*desk = _dsk;
 					return TRUE;
+				}
+			}
 		}
 	}
 
 	return FALSE;
+}
+
+static BOOL virgo_contains_window(HWND hwnd) {
+	return virgo_monitor_desk_from_hwnd_local(hwnd, NULL, NULL);
 }
 
 static unsigned virgo_active_monitor() {
@@ -293,9 +307,92 @@ static void virgo_toggle_hotkeys() {
 	}
 }
 
+static void CALLBACK virgo_update_window_focus_on_new_foreground(
+	HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject,
+	LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	unsigned monitor_idx;
+	MonitorState *state;
+	(void)hWinEventHook;
+	(void)event;
+	(void)dwEventThread;
+	(void)dwmsEventTime;
+
+	/* Only trigger on top level windows */
+	if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+		return;
+
+	if (is_valid_window(hwnd)) {
+		monitor_idx = virgo_monitor_from_hwnd(hwnd);
+		state = &virgo.monitors[monitor_idx];
+		state->desktops[state->current].lastFocus = hwnd;
+	}
+}
+
+static void CALLBACK virgo_remove_window_from_monitor_on_move(
+	HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject,
+	LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	Windows *desk;
+	MonitorState *state;
+	(void)hWinEventHook;
+	(void)event;
+	(void)dwEventThread;
+	(void)dwmsEventTime;
+
+	/* Only trigger on top level windows */
+	if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+		return;
+
+	if (is_valid_window(hwnd)) {
+		while (virgo_monitor_desk_from_hwnd_local(hwnd, &state, &desk)) {
+			windows_del(desk, hwnd);
+			if (desk->lastFocus == hwnd)
+				desk->lastFocus = NULL;
+		}
+	}
+}
+
+static void CALLBACK virgo_add_window_to_monitor_on_move(
+	HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject,
+	LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	unsigned monitor_idx;
+	Windows *desk;
+	MonitorState *state;
+	(void)hWinEventHook;
+	(void)event;
+	(void)dwEventThread;
+	(void)dwmsEventTime;
+
+	/* Only trigger on top level windows */
+	if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+		return;
+
+	if (is_valid_window(hwnd)) {
+		while (virgo_monitor_desk_from_hwnd_local(hwnd, NULL, &desk)) {
+			windows_del(desk, hwnd);
+		}
+		monitor_idx = virgo_monitor_from_hwnd(hwnd);
+		state = &virgo.monitors[monitor_idx];
+		desk = &state->desktops[state->current];
+		windows_add(desk, hwnd);
+		desk->lastFocus = hwnd;
+	}
+}
+
 static void virgo_init() {
 	unsigned i;
 	virgo_init_monitors();
+
+	virgo.hooks[0] =
+		SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
+						virgo_update_window_focus_on_new_foreground, 0, 0,
+						WINEVENT_OUTOFCONTEXT);
+	virgo.hooks[1] = SetWinEventHook(
+		EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART, NULL,
+		virgo_remove_window_from_monitor_on_move, 0, 0, WINEVENT_OUTOFCONTEXT);
+	virgo.hooks[2] = SetWinEventHook(
+		EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, NULL,
+		virgo_add_window_to_monitor_on_move, 0, 0, WINEVENT_OUTOFCONTEXT);
+
 	virgo.handle_hotkeys = 1;
 	for (i = 0; i < NUM_DESKTOPS; i++) {
 		register_hotkey(i * 2, MOD_ALT | MOD_NOREPEAT, i + 1 + '0');
@@ -309,13 +406,17 @@ static void virgo_init() {
 }
 
 static void virgo_deinit() {
-	unsigned m, d;
+	unsigned m, d, h;
 	for (m = 0; m < NUM_MONITORS; m++) {
 		for (d = 0; d < NUM_DESKTOPS; d++) {
 			windows_show(&virgo.monitors[m].desktops[d]);
 			HeapFree(GetProcessHeap(), 0,
 					 virgo.monitors[m].desktops[d].windows);
 		}
+	}
+	for (h = 0; h < NUM_WIN_HOOK; h++) {
+		if (virgo.hooks[h])
+			UnhookWinEvent(virgo.hooks[h]);
 	}
 	trayicon_deinit();
 }
@@ -347,12 +448,11 @@ static void virgo_go_to_desk(unsigned desk) {
 		return;
 	}
 	virgo_update();
-	state->lastFocus[state->current] = GetForegroundWindow();
 	windows_hide(&state->desktops[state->current]);
 	trayicon_set(monitor_idx, desk);
 	windows_show(&state->desktops[desk]);
 	state->current = desk;
-	SetForegroundWindow(state->lastFocus[state->current]);
+	SetForegroundWindow(state->desktops[state->current].lastFocus);
 }
 
 static void virgo_save_state() {
