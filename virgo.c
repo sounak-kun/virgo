@@ -9,7 +9,7 @@
 #define NUM_DESKTOPS 4
 #define NUM_MONITORS 4
 
-#define NUM_WIN_HOOK 3
+#define NUM_WIN_HOOK 4
 
 char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
 	{"11.ico", "12.ico", "13.ico", "14.ico"},
@@ -378,6 +378,28 @@ static void CALLBACK virgo_add_window_to_monitor_on_move(
 	}
 }
 
+static void CALLBACK virgo_clear_focus_on_minimize(HWINEVENTHOOK hWinEventHook,
+												   DWORD event, HWND hwnd,
+												   LONG idObject, LONG idChild,
+												   DWORD dwEventThread,
+												   DWORD dwmsEventTime) {
+	Windows *desk;
+	(void)hWinEventHook;
+	(void)event;
+	(void)dwEventThread;
+	(void)dwmsEventTime;
+
+	/* Only trigger on top level windows */
+	if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+		return;
+
+	if (is_valid_window(hwnd)) {
+		if (virgo_monitor_desk_from_hwnd_local(hwnd, NULL, &desk) &&
+			(desk->lastFocus == hwnd))
+			desk->lastFocus = NULL;
+	}
+}
+
 static void virgo_init() {
 	unsigned i;
 	virgo_init_monitors();
@@ -392,6 +414,9 @@ static void virgo_init() {
 	virgo.hooks[2] = SetWinEventHook(
 		EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, NULL,
 		virgo_add_window_to_monitor_on_move, 0, 0, WINEVENT_OUTOFCONTEXT);
+	virgo.hooks[3] = SetWinEventHook(
+		EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART, NULL,
+		virgo_clear_focus_on_minimize, 0, 0, WINEVENT_OUTOFCONTEXT);
 
 	virgo.handle_hotkeys = 1;
 	for (i = 0; i < NUM_DESKTOPS; i++) {
