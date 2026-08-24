@@ -1,6 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shellapi.h>
 
 #ifndef MOD_NOREPEAT
 #define MOD_NOREPEAT 0x4000
@@ -11,11 +10,16 @@
 
 #define NUM_WIN_HOOK 4
 
-char *icons[NUM_MONITORS][NUM_DESKTOPS] = {
-	{"11.ico", "12.ico", "13.ico", "14.ico"},
-	{"21.ico", "22.ico", "23.ico", "24.ico"},
-	{"31.ico", "32.ico", "33.ico", "34.ico"},
-	{"41.ico", "42.ico", "43.ico", "44.ico"}};
+#define OSD_MAX_SIZE 150
+#define OSD_MIN_SIZE 40
+#define OSD_BORDER_SIZE 4
+#define OSD_MAX_ALPHA 220
+#define OSD_MIN_ALPHA 120
+#define OSD_OFFSET 20
+#define OSD_FONT_SIZE 72
+#define OSD_FLASH_TIME 60
+#define OSD_EASING_DENOM 4
+#define OSD_TIMER_INTERVAL 15
 
 typedef struct {
 	HWND *windows;
@@ -25,65 +29,199 @@ typedef struct {
 } Windows;
 
 typedef struct {
-	NOTIFYICONDATA nid;
-	HWND hwnd;
-	unsigned bitmapWidth;
-} Trayicon;
-
-typedef struct {
 	unsigned current;
 	HMONITOR monitor;
 	Windows desktops[NUM_DESKTOPS];
 } MonitorState;
 
 typedef struct {
+	HWND hwnd;
+	unsigned alpha;
+	unsigned desk;
+	int current_size;
+	int hold_frames;
+} OSDDesk;
+
+typedef struct {
 	unsigned handle_hotkeys;
 	unsigned monitor_count;
-	Trayicon trayicons[NUM_MONITORS];
+	HFONT osd_font;
+	OSDDesk osds[NUM_MONITORS];
 	MonitorState monitors[NUM_MONITORS];
 	HWINEVENTHOOK hooks[NUM_WIN_HOOK];
 } Virgo;
 
 static Virgo virgo; /* This is fine as .bss section is zero initialized */
 
-static void trayicon_draw(Trayicon *t, unsigned monitor, unsigned number) {
-	ExtractIconEx(icons[monitor][number], 0, &t->nid.hIcon, NULL, 1);
-}
+static void update_osd_pos(unsigned monitor_idx) {
+	OSDDesk *osd = &virgo.osds[monitor_idx];
+	MONITORINFO mi = {sizeof(mi)};
+	if (GetMonitorInfo(virgo.monitors[monitor_idx].monitor, &mi)) {
+		int x = mi.rcWork.right - osd->current_size - OSD_OFFSET;
+		int y = mi.rcWork.bottom - osd->current_size - OSD_OFFSET;
 
-static void trayicon_init() {
-	int m;
-	Trayicon *t;
-	for (m = 0; m < virgo.monitor_count; m++) {
-		t = &virgo.trayicons[m];
-		t->hwnd = CreateWindowA("STATIC", "virgo", 0, 0, 0, 0, 0, NULL, NULL,
-								NULL, NULL);
-		t->bitmapWidth = GetSystemMetrics(SM_CXSMICON);
-		t->nid.cbSize = sizeof(t->nid);
-		t->nid.hWnd = t->hwnd;
-		t->nid.uID = 100;
-		t->nid.uFlags = NIF_ICON;
-		trayicon_draw(t, m, 0);
-		Shell_NotifyIcon(NIM_ADD, &t->nid);
+		SetWindowPos(osd->hwnd, HWND_TOPMOST, x, y, osd->current_size,
+					 osd->current_size, SWP_NOACTIVATE);
 	}
 }
 
-static void trayicon_set(unsigned monitor, unsigned number) {
-	Trayicon *t;
-	t = &virgo.trayicons[monitor];
-	DestroyIcon(t->nid.hIcon);
-	trayicon_draw(t, monitor, number);
-	Shell_NotifyIcon(NIM_MODIFY, &t->nid);
+static void osd_update(unsigned monitor_idx, unsigned desk, BOOL flash) {
+	OSDDesk *osd = &virgo.osds[monitor_idx];
+	osd->desk = desk;
+
+	if (flash) {
+		osd->current_size = OSD_MAX_SIZE;
+		osd->alpha = OSD_MAX_ALPHA;
+		osd->hold_frames = OSD_FLASH_TIME;
+		SetTimer(osd->hwnd, 1, OSD_TIMER_INTERVAL, NULL);
+	} else {
+		osd->current_size = OSD_MIN_SIZE;
+		osd->alpha = OSD_MIN_ALPHA;
+	}
+
+	SetLayeredWindowAttributes(osd->hwnd, 0, (BYTE)osd->alpha, LWA_ALPHA);
+	update_osd_pos(monitor_idx);
+	ShowWindow(osd->hwnd, SW_SHOWNOACTIVATE);
+	InvalidateRect(osd->hwnd, NULL, TRUE);
 }
 
-static void trayicon_deinit() {
-	int m;
-	Trayicon *t;
-	for (m = 0; m < virgo.monitor_count; m++) {
-		t = &virgo.trayicons[m];
-		Shell_NotifyIcon(NIM_DELETE, &t->nid);
-		DestroyIcon(t->nid.hIcon);
-		DestroyWindow(t->hwnd);
+static LRESULT CALLBACK osd_wndproc(HWND hwnd, UINT msg, WPARAM wParam,
+									LPARAM lParam) {
+	unsigned monitor_idx;
+
+	LONG_PTR monitor_idx_plus_one = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+	if (monitor_idx_plus_one == 0)
+		return DefWindowProc(hwnd, msg, wParam, lParam);
+
+	monitor_idx = (unsigned)(monitor_idx_plus_one - 1);
+	OSDDesk *osd = &virgo.osds[monitor_idx];
+
+	switch (msg) {
+	case WM_PAINT: {
+		char text[8];
+		PAINTSTRUCT ps;
+		HDC hdc = BeginPaint(hwnd, &ps);
+
+		SetStretchBltMode(hdc, HALFTONE);
+		SetBrushOrgEx(hdc, 0, 0, NULL);
+
+		HDC memDC = CreateCompatibleDC(hdc);
+		HBITMAP memBmp =
+			CreateCompatibleBitmap(hdc, OSD_MAX_SIZE, OSD_MAX_SIZE);
+		HBITMAP oldBmp = SelectObject(memDC, memBmp);
+
+		RECT fullRc = {0, 0, OSD_MAX_SIZE, OSD_MAX_SIZE};
+
+		HBRUSH border_bg = CreateSolidBrush(RGB(255, 255, 255));
+		FillRect(memDC, &fullRc, border_bg);
+		DeleteObject(border_bg);
+
+		RECT innerRc = fullRc;
+		InflateRect(&innerRc, -OSD_BORDER_SIZE, -OSD_BORDER_SIZE);
+
+		HBRUSH inner_bg = CreateSolidBrush(RGB(30, 30, 30));
+		FillRect(memDC, &innerRc, inner_bg);
+		DeleteObject(inner_bg);
+
+		SetBkMode(memDC, TRANSPARENT);
+		SetTextColor(memDC, RGB(255, 255, 255));
+		SelectObject(memDC, virgo.osd_font);
+
+		wsprintfA(text, "%d", osd->desk + 1);
+
+		DrawTextA(memDC, text, -1, &innerRc,
+				  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+		StretchBlt(hdc, 0, 0, osd->current_size, osd->current_size, memDC, 0, 0,
+				   OSD_MAX_SIZE, OSD_MAX_SIZE, SRCCOPY);
+
+		SelectObject(memDC, oldBmp);
+		DeleteObject(memBmp);
+		DeleteDC(memDC);
+
+		EndPaint(hwnd, &ps);
+		return 0;
 	}
+
+	case WM_TIMER: {
+		if (wParam == 1) {
+			BOOL needs_paint = FALSE;
+
+			if (osd->hold_frames > 0) {
+				osd->hold_frames--;
+			} else {
+				/* Fade alpha */
+				if (osd->alpha > OSD_MIN_ALPHA) {
+					osd->alpha -= 5;
+					if (osd->alpha < OSD_MIN_ALPHA)
+						osd->alpha = OSD_MIN_ALPHA;
+					SetLayeredWindowAttributes(hwnd, 0, (BYTE)osd->alpha,
+											   LWA_ALPHA);
+					needs_paint = TRUE;
+				}
+
+				/* Shrink window size */
+				if (osd->current_size > OSD_MIN_SIZE) {
+					int remaining = osd->current_size - OSD_MIN_SIZE;
+					int step = (remaining / OSD_EASING_DENOM) + 1;
+					osd->current_size -= step;
+					if (osd->current_size < OSD_MIN_SIZE)
+						osd->current_size = OSD_MIN_SIZE;
+					update_osd_pos(monitor_idx);
+					needs_paint = TRUE;
+				}
+
+				/* Stop timer when done */
+				if (osd->alpha == OSD_MIN_ALPHA &&
+					osd->current_size == OSD_MIN_SIZE) {
+					KillTimer(hwnd, 1);
+				}
+			}
+
+			if (needs_paint)
+				InvalidateRect(hwnd, NULL, TRUE);
+		}
+		return 0;
+	}
+	}
+
+	return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+static void osd_init() {
+	int m;
+	WNDCLASSA wc;
+	SecureZeroMemory(&wc, sizeof(wc));
+
+	wc.lpfnWndProc = osd_wndproc;
+	wc.hInstance = GetModuleHandle(NULL);
+	wc.lpszClassName = "VirgoOSD";
+	RegisterClassA(&wc);
+
+	virgo.osd_font =
+		CreateFontA(OSD_FONT_SIZE, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+					DEFAULT_CHARSET, OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
+					CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
+
+	for (m = 0; m < virgo.monitor_count; m++) {
+		virgo.osds[m].hwnd = CreateWindowExA(
+			WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
+				WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+			"VirgoOSD", NULL, WS_POPUP, 0, 0, OSD_MIN_SIZE, OSD_MIN_SIZE, NULL,
+			NULL, wc.hInstance, NULL);
+
+		/* m + 1 to identify NULL */
+		SetWindowLongPtr(virgo.osds[m].hwnd, GWLP_USERDATA, (LONG_PTR)(m + 1));
+		osd_update(m, virgo.monitors[m].current, FALSE);
+	}
+}
+
+static void osd_deinit() {
+	int m;
+	for (m = 0; m < virgo.monitor_count; m++) {
+		DestroyWindow(virgo.osds[m].hwnd);
+	}
+	DeleteObject(virgo.osd_font);
 }
 
 static BOOL CALLBACK find_monitor_handles(HMONITOR monitor, HDC hdc,
@@ -427,7 +565,7 @@ static void virgo_init() {
 					'Q');
 	register_hotkey(i * 2 + 1, MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
 					'S');
-	trayicon_init();
+	osd_init();
 }
 
 static void virgo_deinit() {
@@ -443,7 +581,7 @@ static void virgo_deinit() {
 		if (virgo.hooks[h])
 			UnhookWinEvent(virgo.hooks[h]);
 	}
-	trayicon_deinit();
+	osd_deinit();
 }
 
 static void virgo_move_to_desk(unsigned desk) {
@@ -474,10 +612,10 @@ static void virgo_go_to_desk(unsigned desk) {
 	}
 	virgo_update();
 	windows_hide(&state->desktops[state->current]);
-	trayicon_set(monitor_idx, desk);
 	windows_show(&state->desktops[desk]);
 	state->current = desk;
 	SetForegroundWindow(state->desktops[state->current].lastFocus);
+	osd_update(monitor_idx, desk, TRUE);
 }
 
 static void virgo_save_state() {
@@ -529,7 +667,7 @@ static void virgo_load_state() {
 			state = &virgo.monitors[m];
 			ReadFile(hFile, &state->current, sizeof(state->current), &read,
 					 NULL);
-			trayicon_set(m, state->current);
+			osd_update(m, state->current, TRUE);
 
 			for (d = 0; d < NUM_DESKTOPS; d++) {
 				desk = &state->desktops[d];
