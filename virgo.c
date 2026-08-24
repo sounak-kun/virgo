@@ -1,12 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "config.h"
 
 #ifndef MOD_NOREPEAT
 #define MOD_NOREPEAT 0x4000
 #endif
-
-#define NUM_DESKTOPS 4
-#define NUM_MONITORS 4
 
 #define NUM_WIN_HOOK 4
 
