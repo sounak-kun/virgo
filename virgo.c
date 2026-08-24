@@ -537,6 +537,8 @@ void __main(void) {
 	virgo_load_state();
 	while (GetMessage(&msg, NULL, 0, 0)) {
 		if (msg.message != WM_HOTKEY) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 			continue;
 		}
 		if (msg.wParam == NUM_DESKTOPS * 2) {
